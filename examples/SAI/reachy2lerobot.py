@@ -30,10 +30,8 @@ STATE_KEYS_MAPPTING = {
     "torso": "torso",
     "left_arm": "left_arm",
     "right_arm": "right_arm",
-    "left_arm_gripper": "left_hand",
-    "right_arm_gripper": "right_hand",
-    "right_leg": "right_leg",
-    "left_leg": "left_leg",
+    "left_arm_gripper": ["left_hand", "left_gripper_qpos"],
+    "right_arm_gripper": ["right_hand", "right_gripper_qpos"],
 }
 
 
@@ -81,6 +79,12 @@ def load_episodes_from_hdf5(hdf5_path: str):
                 else:
                     episode_data["timestamps"] = None
 
+                if "obs/eef_pose" in demo_grp:
+                    eef_pose_grp = demo_grp["obs/eef_pose"]
+                    episode_data["eef_pose"] = {}
+                    for part_name in eef_pose_grp.keys():
+                        episode_data["eef_pose"][part_name] = np.array(eef_pose_grp[part_name])
+
                 if "obs/qpos" in demo_grp:
                     qpos_grp = demo_grp["obs/qpos"]
                     episode_data["qpos"] = {}
@@ -118,7 +122,7 @@ def _load_info_group(info_grp, info_dict):
             info_dict[key] = data
 
 
-def build_modality_json(episodes, env_metadata, task_descriptions, action_type="ik"):
+def build_modality_json(episodes, env_metadata, task_descriptions):
     modality = {
         "state": {},
         "action": {},
@@ -127,49 +131,52 @@ def build_modality_json(episodes, env_metadata, task_descriptions, action_type="
     if not episodes:
         return modality
 
+    # Add action modality
+    if "actions" in episodes[0]:
+        modality["action"] = {
+            "base": {"start": 0, "end": 3},
+            "torso": {"start": 3, "end": 4},
+            "left_arm_eef_pos": {"start": 4, "end": 7},
+            "left_arm_eef_rot": {"start": 7, "end": 10},
+            "right_arm_eef_pos": {"start": 10, "end": 13},
+            "right_arm_eef_rot": {"start": 13, "end": 16},
+            "left_gripper_close": {"start": 16, "end": 17},
+            "right_gripper_close": {"start": 17, "end": 18},
+        }
+
+    # Add qpos to state
+    state_idx = 0
     if "qpos" in episodes[0]:
-        qpos_keys = sorted(episodes[0]["qpos"].keys())
-        qpos_keys = [k for k in qpos_keys if k in STATE_KEYS_MAPPTING]
-        state_idx = 0
-        action_idx = 0
-
-        for part_name in qpos_keys:
-            part_qpos = episodes[0]["qpos"][part_name]
+        for k, v in STATE_KEYS_MAPPTING.items():
+            part_qpos = episodes[0]["qpos"].get(k, None)
+            if part_qpos is None:
+                continue
             state_part_dim = part_qpos.shape[1] if len(part_qpos.shape) > 1 else 1
-
-            modality["state"][STATE_KEYS_MAPPTING[part_name]] = {
-                "start": state_idx,
-                "end": state_idx + state_part_dim,
-            }
-            if action_type == "joint":
-                action_part_dim = part_qpos.shape[1] if len(part_qpos.shape) > 1 else 1
-                modality["action"][STATE_KEYS_MAPPTING[part_name]] = {
-                    "start": action_idx,
-                    "end": action_idx + action_part_dim,
-                }
-            elif action_type == "ik":
-                mapped_name = STATE_KEYS_MAPPTING[part_name]
-                if "hand" in mapped_name or mapped_name in ["base", "torso"]:
-                    action_part_dim = state_part_dim
-                elif "arm" in mapped_name:
-                    action_part_dim = 6
-                else:
-                    action_part_dim = state_part_dim
-
-                modality["action"][mapped_name] = {
-                    "start": action_idx,
-                    "end": action_idx + action_part_dim,
-                }
+            if isinstance(v, list):
+                for state_name in v:
+                    modality["state"][state_name] = {
+                        "start": state_idx,
+                        "end": state_idx + state_part_dim,
+                    }
             else:
-                raise ValueError(f"Invalid action type: {action_type}")
-            action_idx += action_part_dim
+                modality["state"][v] = {
+                    "start": state_idx,
+                    "end": state_idx + state_part_dim,
+                }
             state_idx += state_part_dim
-    else:
-        if len(episodes[0]["proprio"].shape) > 0:
-            modality["state"]["proprio"] = {
-                "start": 0,
-                "end": episodes[0]["proprio"].shape[-1],
-            }
+
+    # Add eef pose to state
+    if "eef_pose" in episodes[0]:
+        if "left_arm_gripper" in episodes[0]["eef_pose"]:
+            modality["state"]["left_arm_eef_pos"] = {"start": state_idx, "end": state_idx + 3}
+            state_idx += 3
+            modality["state"]["left_arm_eef_quat"] = {"start": state_idx, "end": state_idx + 4, "rotation_type": "quaternion"}
+            state_idx += 4
+        if "right_arm_gripper" in episodes[0]["eef_pose"]:
+            modality["state"]["right_arm_eef_pos"] = {"start": state_idx, "end": state_idx + 3}
+            state_idx += 3
+            modality["state"]["right_arm_eef_quat"] = {"start": state_idx, "end": state_idx + 4, "rotation_type": "quaternion"}
+            state_idx += 4
 
     if episodes and "pixels" in episodes[0]:
         modality["video"] = {}
@@ -228,59 +235,6 @@ def save_video_from_pixels(pixels_array, output_path, fps=20):
         return False
 
 
-def convert_actions_to_joint(episode_data, controller_info, modality):
-    """Convert actions to absolute joint positions based on controller type."""
-    actions = np.array(episode_data["actions"])
-
-    if "qpos" not in episode_data or not episode_data["qpos"]:
-        return actions.tolist()
-
-    qpos_keys = sorted(episode_data["qpos"].keys())
-    qpos_keys = [k for k in qpos_keys if k in STATE_KEYS_MAPPTING]
-
-    converted_parts = []
-
-    for part_name in qpos_keys:
-        part_qpos = np.array(episode_data["qpos"][part_name])
-
-        part_controller = controller_info.get(part_name, {})
-        controller_type = part_controller.get("type", "")
-        input_type = part_controller.get("input_type", "delta")
-
-        mapped_part_name = STATE_KEYS_MAPPTING[part_name]
-
-        if mapped_part_name in modality.get("action", {}):
-            part_action_start = modality["action"][mapped_part_name]["start"]
-            part_action_end = modality["action"][mapped_part_name]["end"]
-            part_action_slice = actions[:, part_action_start:part_action_end]
-        else:
-            raise ValueError(f"{mapped_part_name} not found in modality.action")
-
-        if "OSC" in controller_type or "IK" in controller_type:
-            next_qpos = np.roll(part_qpos, -1, axis=0)
-            next_qpos[-1] = part_qpos[-1]
-            part_actions = next_qpos
-        elif controller_type == "JOINT_POSITION":
-            if input_type == "absolute":
-                part_actions = part_qpos
-            elif input_type == "delta":
-                if len(part_action_slice.shape) == 1:
-                    part_action_slice = part_action_slice.reshape(-1, 1)
-                if len(part_qpos.shape) == 1:
-                    part_qpos = part_qpos.reshape(-1, 1)
-                part_actions = part_qpos + part_action_slice
-        else:
-            part_actions = part_qpos
-
-        converted_parts.append(part_actions)
-
-    if converted_parts:
-        converted_actions = np.concatenate(converted_parts, axis=1)
-        return converted_actions.tolist()
-    else:
-        return actions.tolist()
-
-
 def create_parquet_data(
     episode_data,
     episode_index,
@@ -289,36 +243,28 @@ def create_parquet_data(
     modality,
     validity_task_index,
     controller_info=None,
-    action_type="ik",
     dt=0.05,
 ):
     T = len(episode_data["actions"])
 
     state_list = []
-    if "qpos" in episode_data and episode_data["qpos"]:
-        qpos_keys = sorted(episode_data["qpos"].keys())
-        qpos_keys = [k for k in qpos_keys if k in STATE_KEYS_MAPPTING]
-        for t in range(T):
-            state_t = []
-            for part_name in qpos_keys:
-                part_qpos = episode_data["qpos"][part_name][t]
+    for t in range(T):
+        state_t = []
+        if "qpos" in episode_data and episode_data["qpos"]:
+            for k, v in STATE_KEYS_MAPPTING.items():
+                part_qpos = episode_data["qpos"][k][t]
                 if np.isscalar(part_qpos):
                     state_t.append(float(part_qpos))
                 else:
                     state_t.extend([float(x) for x in part_qpos.flatten()])
-            state_list.append(state_t)
-    else:
-        if len(episode_data["proprio"].shape) == 1:
-            state_list = [[float(x)] for x in episode_data["proprio"]]
-        else:
-            state_list = episode_data["proprio"].tolist()
 
-    if action_type == "joint":
-        if controller_info is None:
-            controller_info = {}
-        action_list = convert_actions_to_joint(episode_data, controller_info, modality)
-    else:
-        action_list = episode_data["actions"].tolist()
+        if "eef_pose" in episode_data and episode_data["eef_pose"]:
+            for arm in ["left_arm_gripper", "right_arm_gripper"]:
+                if arm in episode_data["eef_pose"]:
+                    state_t.extend([float(x) for x in episode_data["eef_pose"][arm][t]])
+        state_list.append(state_t)
+
+    action_list = episode_data["actions"].tolist()
 
     # Ensure timestamps match video fps (20fps) not wall-clock recording time
     if episode_data.get("timestamps") is not None:
@@ -355,7 +301,7 @@ def create_parquet_data(
     return df
 
 
-def convert_sessions_to_lerobot(input_dir, output_dir, action_type="ik"):
+def convert_sessions_to_lerobot(input_dir, output_dir):
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(os.path.join(output_dir, "meta"), exist_ok=True)
     os.makedirs(os.path.join(output_dir, "data", "chunk-000"), exist_ok=True)
@@ -399,7 +345,6 @@ def convert_sessions_to_lerobot(input_dir, output_dir, action_type="ik"):
         all_episodes,
         all_env_metadata[0] if all_env_metadata else {},
         unique_tasks,
-        action_type,
     )
 
     with open(os.path.join(output_dir, "meta", "modality.json"), "w") as f:
@@ -430,7 +375,6 @@ def convert_sessions_to_lerobot(input_dir, output_dir, action_type="ik"):
             modality,
             validity_task_index,
             controller_info=controller_info,
-            action_type=action_type,
         )
 
         parquet_path = os.path.join(output_dir, "data", "chunk-000", f"episode_{episode_idx:06d}.parquet")
@@ -613,20 +557,12 @@ def main():
         type=str,
         help="Output directory for LeRobot dataset",
     )
-    parser.add_argument(
-        "--action_type",
-        type=str,
-        default="joint",
-        choices=["ik", "joint"],
-        help="Action type for output dataset: 'ik' for OSC/IK commands, 'joint' for absolute joint positions",
-    )
 
     args = parser.parse_args()
 
     convert_sessions_to_lerobot(
         args.input_dir,
         args.output_dir,
-        action_type=args.action_type,
     )
 
 

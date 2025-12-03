@@ -213,25 +213,45 @@ class Reachy2DataConfig(BaseDataConfig):
         "video.cam_robot_0:agentview_right_rgb",
     ]
     state_keys = [
-        "state.left_arm",
-        "state.right_arm",
-        "state.left_hand",
-        "state.right_hand",
+        "state.right_arm_eef_pos",
+        "state.right_arm_eef_quat",
+        "state.right_gripper_qpos",
+        "state.left_arm_eef_pos",
+        "state.left_arm_eef_quat",
+        "state.left_gripper_qpos",
     ]
     action_keys = [
-        "action.left_arm",
-        "action.right_arm",
-        "action.left_hand",
-        "action.right_hand",
+        "action.right_arm_eef_pos",
+        "action.right_arm_eef_rot",
+        "action.right_gripper_close",
+        "action.left_arm_eef_pos",
+        "action.left_arm_eef_rot",
+        "action.left_gripper_close",
     ]
-    
+
     language_keys = ["annotation.human.action.task_description"]
     observation_indices = [0]
     action_indices = list(range(16))
 
-    def transform(self) -> ComposedModalityTransform:
+    # Used in StateActionTransform for normalization and target rotations
+    state_normalization_modes = {
+        "state.right_arm_eef_pos": "min_max",
+        "state.right_gripper_qpos": "min_max",
+        "state.left_arm_eef_pos": "min_max",
+        "state.left_gripper_qpos": "min_max",
+    }
+    state_target_rotations = {
+        "state.right_arm_eef_quat": "rotation_6d",
+        "state.left_arm_eef_quat": "rotation_6d",
+    }
+    action_normalization_modes = {
+        "action.right_gripper_close": "binary",
+        "action.left_gripper_close": "binary",
+    }
+
+    def transform(self):
         transforms = [
-            # Video transforms
+            # video transforms
             VideoToTensor(apply_to=self.video_keys),
             VideoCrop(apply_to=self.video_keys, scale=0.95),
             VideoResize(apply_to=self.video_keys, height=224, width=224, interpolation="linear"),
@@ -243,28 +263,25 @@ class Reachy2DataConfig(BaseDataConfig):
                 hue=0.08,
             ),
             VideoToNumpy(apply_to=self.video_keys),
-            
-            # State transforms
+            # state transforms
             StateActionToTensor(apply_to=self.state_keys),
             StateActionTransform(
-                apply_to=self.state_keys
+                apply_to=self.state_keys,
+                normalization_modes=self.state_normalization_modes,
+                target_rotations=self.state_target_rotations,
             ),
-            
-            # Action transforms
+            # action transforms
             StateActionToTensor(apply_to=self.action_keys),
             StateActionTransform(
                 apply_to=self.action_keys,
-                normalization_modes={key: "min_max" for key in self.action_keys},
+                normalization_modes=self.action_normalization_modes,
             ),
-            
-            # Concatenation
+            # concat transforms
             ConcatTransform(
                 video_concat_order=self.video_keys,
                 state_concat_order=self.state_keys,
                 action_concat_order=self.action_keys,
             ),
-            
-            # Model-specific transform
             GR00TTransform(
                 state_horizon=len(self.observation_indices),
                 action_horizon=len(self.action_indices),
@@ -272,8 +289,9 @@ class Reachy2DataConfig(BaseDataConfig):
                 max_action_dim=32,
             ),
         ]
-        
+
         return ComposedModalityTransform(transforms=transforms)
+
 
 
 ###########################################################################################
@@ -855,4 +873,5 @@ DATA_CONFIG_MAP = {
     "unitree_g1_full_body": UnitreeG1FullBodyDataConfig(),
     "oxe_droid": OxeDroidDataConfig(),
     "agibot_genie1": AgibotGenie1DataConfig(),
+    "reachy2": Reachy2DataConfig(),
 }
