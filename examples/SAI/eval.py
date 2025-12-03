@@ -37,12 +37,21 @@ def _get_qpos(robot) -> Dict[str, np.ndarray]:
 
     base_joints = robot.parts["base"].joint_names
     q["base"] = np.array([sim.data.get_joint_qpos(j) for j in base_joints])
-    q["left_arm"] = np.array([sim.data.get_joint_qpos(j) for j in robot.parts["left_arm"].joint_names])
-    q["right_arm"] = np.array([sim.data.get_joint_qpos(j) for j in robot.parts["right_arm"].joint_names])
-    q["left_hand"] = np.array([sim.data.get_joint_qpos(j) for j in robot.parts["left_arm_gripper"].joint_names])
-    q["right_hand"] = np.array([sim.data.get_joint_qpos(j) for j in robot.parts["right_arm_gripper"].joint_names])
+    q["left_arm"] = np.array(
+        [sim.data.get_joint_qpos(j) for j in robot.parts["left_arm"].joint_names]
+    )
+    q["right_arm"] = np.array(
+        [sim.data.get_joint_qpos(j) for j in robot.parts["right_arm"].joint_names]
+    )
+    q["left_hand"] = np.array(
+        [sim.data.get_joint_qpos(j) for j in robot.parts["left_arm_gripper"].joint_names]
+    )
+    q["right_hand"] = np.array(
+        [sim.data.get_joint_qpos(j) for j in robot.parts["right_arm_gripper"].joint_names]
+    )
     q["torso"] = np.array([sim.data.get_joint_qpos(j) for j in robot.parts["torso"].joint_names])
     return q
+
 
 def get_eef_pose(robot) -> Dict[str, np.ndarray]:
     eef_pose = {}
@@ -87,7 +96,7 @@ def main():
     )
     parser.add_argument("--host", type=str, default="localhost")
     parser.add_argument("--port", type=int, default=6000)
-    parser.add_argument("--episodes", type=int, default=2)
+    parser.add_argument("--episodes", type=int, default=1)
     parser.add_argument("--max_steps", type=int, default=1000)
     parser.add_argument(
         "--video-dir",
@@ -152,8 +161,8 @@ def main():
                     action_chunk["action.left_arm_eef_rot"][0],
                     action_chunk["action.right_arm_eef_pos"][0],
                     action_chunk["action.right_arm_eef_rot"][0],
-                    action_chunk["action.left_gripper_close"][0],
-                    action_chunk["action.right_gripper_close"][0],
+                    [1.0] if action_chunk["action.left_gripper_close"][0] > 0 else [-1.0],
+                    [1.0] if action_chunk["action.right_gripper_close"][0] > 0 else [-1.0],
                 ]
             ).astype(np.float32)
 
