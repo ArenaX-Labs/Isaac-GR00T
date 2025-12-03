@@ -5,6 +5,7 @@ Evaluate the fine-tuned GR00T N1.5 on the SAI Kitchen environments.
 import argparse
 from pathlib import Path
 from typing import Dict
+from sai_mujoco.utils.v0 import rotations as T
 import json_numpy
 
 json_numpy.patch()
@@ -43,24 +44,34 @@ def _get_qpos(robot) -> Dict[str, np.ndarray]:
     q["torso"] = np.array([sim.data.get_joint_qpos(j) for j in robot.parts["torso"].joint_names])
     return q
 
+def get_eef_pose(robot) -> Dict[str, np.ndarray]:
+    eef_pose = {}
+    for part_name in ["left_arm_gripper", "right_arm_gripper"]:
+        part = robot.parts[part_name]
+        pos = robot.sim.data.get_site_xpos(part.site_name)
+        quat = T.mat2quat(robot.sim.data.get_site_xmat(part.site_name))
+        eef_pose[part_name] = np.array([pos[0], pos[1], pos[2], quat[0], quat[1], quat[2], quat[3]])
+    return eef_pose
+
 
 def build_gr00t_obs(obs, robot, task_description: str) -> Dict[str, np.ndarray]:
     """Construct the observation dict expected by reachy2_mobile_base data_config."""
     left_img = obs["pixels"]["cam_robot_0:agentview_left_rgb"]
     center_img = obs["pixels"]["cam_robot_0:agentview_center_rgb"]
     right_img = obs["pixels"]["cam_robot_0:agentview_right_rgb"]
-    q = _get_qpos(robot)
+    qpos = _get_qpos(robot)
+    eef_pose = get_eef_pose(robot)
 
     gr00t_obs = {
         "video.cam_robot_0:agentview_center_rgb": center_img[None, ...],
         "video.cam_robot_0:agentview_left_rgb": left_img[None, ...],
         "video.cam_robot_0:agentview_right_rgb": right_img[None, ...],
-        "state.base": q["base"][None, ...],
-        "state.torso": q["torso"][None, ...],
-        "state.left_arm": q["left_arm"][None, ...],
-        "state.right_arm": q["right_arm"][None, ...],
-        "state.left_hand": q["left_hand"][None, ...],
-        "state.right_hand": q["right_hand"][None, ...],
+        "state.left_arm_eef_pos": eef_pose["left_arm_gripper"][None, :3],
+        "state.left_arm_eef_quat": eef_pose["left_arm_gripper"][None, 3:],
+        "state.right_arm_eef_pos": eef_pose["right_arm_gripper"][None, :3],
+        "state.right_arm_eef_quat": eef_pose["right_arm_gripper"][None, 3:],
+        "state.left_gripper_qpos": qpos["left_hand"][None, ...],
+        "state.right_gripper_qpos": qpos["right_hand"][None, ...],
         "annotation.human.action.task_description": [task_description],
     }
     return gr00t_obs
@@ -137,10 +148,12 @@ def main():
             env_action = np.concatenate(
                 [
                     np.zeros(4),  # base and torso actions are not used
-                    action_chunk["action.left_arm"][0],
-                    action_chunk["action.right_arm"][0],
-                    action_chunk["action.left_hand"][0],
-                    action_chunk["action.right_hand"][0],
+                    action_chunk["action.left_arm_eef_pos"][0],
+                    action_chunk["action.left_arm_eef_rot"][0],
+                    action_chunk["action.right_arm_eef_pos"][0],
+                    action_chunk["action.right_arm_eef_rot"][0],
+                    action_chunk["action.left_gripper_close"][0],
+                    action_chunk["action.right_gripper_close"][0],
                 ]
             ).astype(np.float32)
 
