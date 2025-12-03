@@ -204,9 +204,79 @@ class FourierGr1ArmsOnlyDataConfig(BaseDataConfig):
         ]
         return ComposedModalityTransform(transforms=transforms)
 
-
 ###########################################################################################
 
+class Reachy2DataConfig(BaseDataConfig):
+    video_keys = [
+        "video.cam_robot_0:agentview_center_rgb",
+        "video.cam_robot_0:agentview_left_rgb",
+        "video.cam_robot_0:agentview_right_rgb",
+    ]
+    state_keys = [
+        "state.left_arm",
+        "state.right_arm",
+        "state.left_hand",
+        "state.right_hand",
+    ]
+    action_keys = [
+        "action.left_arm",
+        "action.right_arm",
+        "action.left_hand",
+        "action.right_hand",
+    ]
+    
+    language_keys = ["annotation.human.action.task_description"]
+    observation_indices = [0]
+    action_indices = list(range(16))
+
+    def transform(self) -> ComposedModalityTransform:
+        transforms = [
+            # Video transforms
+            VideoToTensor(apply_to=self.video_keys),
+            VideoCrop(apply_to=self.video_keys, scale=0.95),
+            VideoResize(apply_to=self.video_keys, height=224, width=224, interpolation="linear"),
+            VideoColorJitter(
+                apply_to=self.video_keys,
+                brightness=0.3,
+                contrast=0.4,
+                saturation=0.5,
+                hue=0.08,
+            ),
+            VideoToNumpy(apply_to=self.video_keys),
+            
+            # State transforms
+            StateActionToTensor(apply_to=self.state_keys),
+            StateActionTransform(
+                apply_to=self.state_keys
+            ),
+            
+            # Action transforms
+            StateActionToTensor(apply_to=self.action_keys),
+            StateActionTransform(
+                apply_to=self.action_keys,
+                normalization_modes={key: "min_max" for key in self.action_keys},
+            ),
+            
+            # Concatenation
+            ConcatTransform(
+                video_concat_order=self.video_keys,
+                state_concat_order=self.state_keys,
+                action_concat_order=self.action_keys,
+            ),
+            
+            # Model-specific transform
+            GR00TTransform(
+                state_horizon=len(self.observation_indices),
+                action_horizon=len(self.action_indices),
+                max_state_dim=64,
+                max_action_dim=32,
+            ),
+        ]
+        
+        return ComposedModalityTransform(transforms=transforms)
+
+
+###########################################################################################
 
 class So100DataConfig(BaseDataConfig):
     video_keys = ["video.webcam"]
